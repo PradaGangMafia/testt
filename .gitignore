@@ -1,0 +1,6 @@
+/target
+*.part
+*.new
+*.old
+.DS_Store
+/release-artifacts/0.2.0-test

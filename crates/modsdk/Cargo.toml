@@ -1,0 +1,30 @@
+[package]
+name = "modsdk"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+[features]
+default = []
+# Each feature links the matching host import. A module only imports the
+# host functions its Ctx calls actually reach, so its manifest declares only
+# those capabilities. ABI 2 features need `abi = 2` in the manifest.
+fs-read = []
+fs-dir = []
+fs-range = []
+fs-write = []
+exec = []
+net = []
+net-post = []
+clock = []
+random = []
+env = []
+sleep = []
+spool = []
+log = []
+
+[dependencies]
+modsdk-macros = { path = "../modsdk-macros" }
+serde_json.workspace = true
+thiserror.workspace = true

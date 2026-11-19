@@ -1,0 +1,1 @@
+/home/ops/projects/agent-fleet-manus-main/mods/stealer/target/wasm32-unknown-unknown/release/mod_stealer.wasm: /home/ops/projects/agent-fleet-manus-main/crates/modsdk/src/lib.rs /home/ops/projects/agent-fleet-manus-main/crates/modsdk-macros/src/lib.rs /home/ops/projects/agent-fleet-manus-main/mods/stealer/src/lib.rs

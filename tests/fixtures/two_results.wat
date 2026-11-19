@@ -1,0 +1,12 @@
+(module
+  (import "env" "result" (func $result (param i32 i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "{\"ok\":true,\"stdout\":\"first\",\"stderr\":\"\",\"code\":0}")
+  (data (i32.const 64) "{\"ok\":true,\"stdout\":\"second\",\"stderr\":\"\",\"code\":0}")
+  (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+  (func (export "dealloc") (param i32) (param i32))
+  (func (export "handle") (param i32) (param i32) (result i32)
+    (call $result (i32.const 0) (i32.const 49))
+    (call $result (i32.const 64) (i32.const 50))
+    (i32.const 0))
+)

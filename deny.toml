@@ -1,0 +1,30 @@
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "blessing",
+    "WTFPL",
+    "OpenSSL",
+]
+
+[bans]
+# The dependency graph is pinned by rustls/reqwest and wasmi. Duplicate
+# major versions are reported but do not fail the build; every duplicate is
+# a transitive choice we cannot unify without changing those engines.
+multiple-versions = "warn"
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2021-0127", reason = "serde_cbor is the frozen wire codec named by docs/SPEC.md; replacing it changes the protocol" },
+    { id = "RUSTSEC-2024-0436", reason = "paste is a proc-macro dependency of the pinned wasmi 0.31 engine; it is not present in the runtime ABI" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

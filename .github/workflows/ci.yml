@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+      - name: Dependency policy
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check
+      - name: Plugin gate
+        run: ./scripts/plugin-gate.sh
+      - name: Windows cross-check
+        run: ./scripts/windows-check.sh
+      - name: Deploy checks
+        run: |
+          cargo build --release -p agentd
+          cp target/release/agentd "$RUNNER_TEMP/agentd"
+          chmod 0755 "$RUNNER_TEMP/agentd"
+          ./scripts/resilience-check.sh "$RUNNER_TEMP/agentd"
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --workspace --all-targets

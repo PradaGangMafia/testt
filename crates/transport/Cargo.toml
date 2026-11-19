@@ -1,0 +1,25 @@
+[package]
+name = "transport"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+onion = ["reqwest/socks"]
+
+[dependencies]
+async-trait.workspace = true
+blake3.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+msgfmt = { path = "../msgfmt" }

@@ -1,0 +1,3 @@
+b88f23e16399ec73f4f47b946813efcc8c8860b655caec663fe274a3f1f71c43  release-artifacts/package/bin/adminctl
+7e704ba184868931c60251377748902202933f77987d111cf728ff8ce077e735  release-artifacts/package/bin/agentd
+932d6ec23091ddf6734685ced0450e212d53c533fdc0ee93046a26ce138e07ca  release-artifacts/package/bin/relayd

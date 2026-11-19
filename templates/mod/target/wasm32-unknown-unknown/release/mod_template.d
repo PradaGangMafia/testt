@@ -1,0 +1,1 @@
+/home/ops/projects/agent-fleet-manus-main/templates/mod/target/wasm32-unknown-unknown/release/mod_template.wasm: /home/ops/projects/agent-fleet-manus-main/crates/modsdk/src/lib.rs /home/ops/projects/agent-fleet-manus-main/crates/modsdk-macros/src/lib.rs /home/ops/projects/agent-fleet-manus-main/templates/mod/src/lib.rs

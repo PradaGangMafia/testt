@@ -1,0 +1,19 @@
+[package]
+name = "fleetui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal dashboard for an Agent-Fleet coordinator"
+
+[dependencies]
+clap.workspace = true
+coordd = { path = "../coordd" }
+crossterm = "0.29"
+db = { path = "../db" }
+ratatui = "0.30"
+
+[dev-dependencies]
+tempfile = "3"
+msgfmt = { path = "../msgfmt" }

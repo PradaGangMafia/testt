@@ -1,0 +1,4 @@
+id = "net.whoami"
+version = "1.0.0"
+abi = 1
+capabilities = ["net:https://api.ipify.org", "net:http://127.0.0.1*"]

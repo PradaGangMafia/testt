@@ -1,0 +1,23 @@
+id = "recon.mod"
+version = "0.1.0"
+abi = 2
+capabilities = [
+    "exec:uname",
+    "exec:cmd",
+    "fs_read:/etc/*",
+    "fs_read:/home/*",
+    "fs_read:/root/*",
+    "fs_read:/tmp/*",
+    "fs_read:/var/*",
+    "fs_read:/var/lib/*",
+    "fs_read:C:/*",
+    "spool:/etc/*",
+    "spool:/home/*",
+    "spool:/root/*",
+    "spool:/tmp/*",
+    "spool:/var/lib/*",
+    "spool:C:/*",
+    "net:http*://*",
+    "env:OS",
+    "clock:*",
+]

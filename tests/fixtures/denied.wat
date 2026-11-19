@@ -1,0 +1,10 @@
+(module
+  (import "env" "write_file" (func $write_file (param i32 i32 i32 i32) (result i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "/tmp/agent-fleet-denied-target")
+  (data (i32.const 64) "payload")
+  (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+  (func (export "dealloc") (param i32) (param i32))
+  (func (export "handle") (param i32) (param i32) (result i32)
+    (call $write_file (i32.const 0) (i32.const 30) (i32.const 64) (i32.const 7)))
+)

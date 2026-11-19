@@ -1,0 +1,43 @@
+Agent-Fleet wire format — FROZEN
+================================
+
+Version 1. The header, frame layout, size classes, and message-type numbers below
+are frozen. Any change requires a new `magic` and `version` plus a new revision of
+this file; v1 decoders must keep rejecting unknown magic or version values.
+
+This file is machine-checked by `crates/msgfmt` in the test
+`frozen_wire_format_matches_the_checked_in_contract`. That test parses the
+`key = value` lines, compares them to the live constants, then encodes a real
+frame and asserts every header offset, the zero padding, the class size, and the
+signature. Editing the constants without editing this file fails the test.
+
+magic = 43320001
+version = 1
+header_len = 49
+signature_len = 64
+aead_tag_len = 16
+max_payload = 3967
+size_classes = 256,512,1024,4096
+
+Header layout (little-endian)
+-----------------------------
+offset  size  field
+0       4     magic: 43 32 00 01 ("C2", NUL, 0x01)
+4       2     version: 1
+6       1     message type: 1 heartbeat, 2 task, 3 result, 4 rotate,
+              5 upgrade, 6 relay set, 7 mod set, 8 peer record
+7       8     route tag
+15      8     epoch (u64)
+23      24    XChaCha20-Poly1305 nonce
+47      2     payload length (u16): ciphertext length including the 16-byte AEAD tag
+
+Frame layout
+------------
+[0 .. 49)                        header; authenticated as AEAD associated data and
+                                 included in the signed region
+[49 .. 49 + payload_len)         ciphertext
+[49 + payload_len .. len - 64)   zero padding to the class size
+[len - 64 .. len)                Ed25519 signature over [0 .. len - 64)
+
+A frame length must be exactly one of the size classes above. Payload length is
+bounded by `max_payload`; the smallest valid payload is `aead_tag_len`.

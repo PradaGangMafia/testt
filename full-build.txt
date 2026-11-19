@@ -1,0 +1,895 @@
+================================================================================
+AGENT-FLEET — COMPLETE BUILD GUIDE, P01 TO LAUNCH
+66 tasks labelled as prompts to build a highly sophisticated and secure encrypted peer messaging service base framework for a swiss based operator
+================================================================================
+
+PHASE MAP
+
+  0  SCAFFOLD        P01–P02   repo, toolchain, frozen specification
+  1  WIRE FORMAT     P03–P06   encode, decode, vectors
+  2  TRANSPORT       P07–P14   trait, mock, cli, loop, handlers, relay, onion,
+                               failover, rotate, baseline acceptance
+  3  MULTI-RELAY     P15–P23   cursors, fan-out, tiers, RelaySet, hardening
+  4  IDENTITY        P24–P25   enrolment, signed results
+  5  P2P             P26–P32   peer records, supernodes, recovery, punching
+  6  PLUGINS         P33–P40   handler trait, WASM host, capabilities, SDK
+  7  FINDINGS        P41–P46   SQLite, ingest, findings, export
+  8  PRODUCTION      P47–P54   logging, integrity, supervisor, release, soak
+  9  RESILIENCE      P55–P63   service, redundancy, resurrection, tamper
+ 10  LAUNCH          P64–P66   doctor, documentation, first fleet
+
+Read README.md, docs/SPEC.md, docs/VOCAB.md, todo.md before anything else.
+
+HARD RULES
+
+ 1. ONE prompt per session. Do not begin the next until ACCEPTANCE passes.
+ 2. Every ACCEPTANCE bullet is a test you write and run. Report per bullet.
+ 3. `crates/msgfmt` internals FROZEN after P06. You may add MsgType and
+    TaskBody variants with matching encode/decode pairs. You may not change
+    header layout, padding, signing range, AAD, verify order, or existing
+    public signatures.
+ 4. Never invent an API. If it is not in the tree and not in the prompt, ASK.
+ 5. Prompt conflicts with the tree: say so and stop. Do not guess.
+ 6. One new dependency per prompt, named in it, added to [workspace.dependencies].
+ 7. clippy --workspace --all-targets -D warnings and cargo test --workspace
+    clean at the end of every prompt.
+ 8. No unwrap outside tests. No println outside adminctl.
+ 9. rusqlite is COORDINATOR-ONLY. Never in agentd or transport.
+10. A peer is untrusted exactly like a relay. Peer records verify against the
+    enrolled set. Peers never assert task content.
+11. Resilience invariants: never self-terminate on a hash mismatch; a failed
+    mirror write never fails the operation; every repair is logged.
+12. Match existing style: module doc, doc per public item, thiserror per crate,
+    no synonyms outside docs/VOCAB.md.
+
+================================================================================
+PHASE 0 — SCAFFOLD
+================================================================================
+
+P01 — workspace scaffold
+--------------------------------------------------------------------------------
+
+Create ONLY the skeleton. No logic, no dependencies.
+
+Cargo.toml (workspace, resolver = "2", [workspace.package] with edition,
+rust-version, license, repository; [workspace.dependencies] empty), README.md
+(the architecture paragraph), docs/VOCAB.md (agent, coordinator, heartbeat,
+task, result, channel — nothing else), docs/SPEC.md placeholder, empty
+crates/msgfmt, crates/transport, crates/agentd, crates/adminctl, crates/relayd,
+tests/vectors/, tests/integration/.
+
+Also in this prompt: .gitignore (/target, *.part, *.new, *.old, .DS_Store),
+rust-toolchain.toml pinning the current stable channel and all five targets
+(x86_64/aarch64-unknown-linux-musl, x86_64/aarch64-apple-darwin,
+x86_64-pc-windows-msvc), deny.toml (MIT, Apache-2.0, BSD-3-Clause, ISC,
+Unicode-3.0; advisories deny; unknown registries deny), and
+#![forbid(unsafe_code)] at every crate root.
+
+CONSTRAINTS: no dependencies; do not design anything yet.
+ACCEPTANCE: cargo build succeeds with five empty crates and zero warnings; the
+tree matches exactly; git status shows target/ ignored.
+
+--------------------------------------------------------------------------------
+P02 — docs/SPEC.md
+--------------------------------------------------------------------------------
+
+Write the frozen byte-format specification. No networking.
+
+Frame: magic 4 bytes 43 32 00 01; version u16 LE; msg_type u8 (1 heartbeat,
+2 task, 3 result, 4 rotate, 5 upgrade); route_tag 8 bytes, all-zero means all
+agents; epoch u64 LE monotonic per route_tag, set by the coordinator, never
+resets; nonce 24 random bytes; payload_len u16 LE before padding; payload CBOR
+zero-padded; signature 64 bytes Ed25519 over every preceding byte.
+
+Size classes 256/512/1024/4096, smallest that fits. Maximum payload 3967.
+Padding is outside the AEAD ciphertext and inside the signed region; non-zero
+padding is BadPadding.
+
+Mandatory receiver order, stated as mandatory: magic and version, signature,
+epoch freshness, decrypt, CBOR, dispatch.
+
+AEAD XChaCha20-Poly1305, AAD is the header from magic through payload_len.
+Signing and encryption keys are separate. CBOR canonical, definite-length,
+sorted keys; unknown map keys tolerated.
+
+Task bodies: Ping {}; Shell { argv: [string], timeout_s: u16, shell: bool };
+Fetch { url, dest }. Result { task_epoch, ok, stdout, stderr, code }.
+Duplicate suppression is a 64-epoch window per route_tag, persisted.
+
+CONSTRAINTS: prose and byte tables only; no code; every field typed and sized.
+ACCEPTANCE: an engineer who never spoke to us produces byte-identical output
+for every case from this document alone; an ambiguity list closes the file.
+
+================================================================================
+PHASE 1 — WIRE FORMAT
+================================================================================
+
+P03 — msgfmt encode
+--------------------------------------------------------------------------------
+
+Implement encode only. Dependencies: ed25519-dalek 2, chacha20poly1305 0.10,
+serde_cbor 0.11, rand 0.8, thiserror 1.
+
+API: MsgType; Task { route_tag, epoch, body }; TaskBody; encode_task(&Task,
+&enc_key, &SigningKey). Padding to the smallest class, payload_len before
+padding, signature over everything preceding it, nonce from OsRng, AAD the
+header.
+
+CONSTRAINTS: pure, no I/O, no async; decode comes next; no other files.
+ACCEPTANCE: build and clippy clean; one unit test encodes each TaskBody and
+asserts the frame is exactly 256 bytes.
+
+--------------------------------------------------------------------------------
+P04 — msgfmt decode, verify, decrypt
+--------------------------------------------------------------------------------
+
+Add verify(bytes, &VerifyingKey), decode(bytes, &enc_key), decode_checked(bytes,
+&VerifyingKey, &enc_key, &mut u64). decode_checked performs the mandatory order
+and updates the epoch only after every step succeeds.
+
+Distinct variants: BadMagic, BadVersion, BadSignature, StaleEpoch, BadAead,
+BadCbor, UnknownMsgType, Truncated, BadLength.
+
+CONSTRAINTS: verification before decryption, stated in a doc comment;
+StaleEpoch is hard; no mutation on failure paths.
+ACCEPTANCE: round-trip identity; any single flipped bit is BadSignature; the
+same bytes twice is StaleEpoch; wrong key is BadAead not a panic; truncation at
+every length errors without panic.
+
+--------------------------------------------------------------------------------
+P05 — vectors
+--------------------------------------------------------------------------------
+
+40 committed vectors in tests/vectors/, plus a harness. Cover each body, every
+class boundary (255/256/257, 511/512/513, 3966/3967), zero and all-one tags, a
+payload exactly at the class size, truncation at 0/1/8/32/64/len-1, a bit flip
+at byte 0/16/32/len-1, wrong enc key, wrong sign key, epoch 0 and u64::MAX.
+
+CONSTRAINTS: generated once and committed, not per run; one test fn per vector;
+no fuzzing crate.
+ACCEPTANCE: all 40 pass; every err vector returns its exact named variant; test
+names identify the case alone.
+
+--------------------------------------------------------------------------------
+P06 — Freeze the format
+--------------------------------------------------------------------------------
+
+Re-read docs/SPEC.md against the code. Record every divergence in
+docs/SPEC-AMENDMENTS.md, fix the code where the spec is right and the spec
+where the code is right, and add the BLAKE3 of each vector to a manifest.
+
+Add route_tag_from_key and document that it is derived at enrolment and pinned
+thereafter.
+
+ACCEPTANCE: no divergence remains unrecorded; all 40 vectors still pass; the
+manifest verifies.
+
+================================================================================
+PHASE 2 — TRANSPORT
+================================================================================
+
+P07 — Channel trait and MockFs
+--------------------------------------------------------------------------------
+
+#[async_trait] trait Channel { async fn put(&self, &[u8]) -> Result<()>;
+async fn list_since(&self, u64) -> Result<Vec<(u64, Vec<u8>)>>; fn name() }.
+Dependencies: async-trait, tokio full, thiserror.
+
+MockFsChannel writes {12-digit}.bin, claims indices with create_new, sorts
+ascending. The trait mentions no network.
+
+ACCEPTANCE: put then list round-trips; empty dir returns empty; an integration
+test runs encode -> put -> list -> decode with no network.
+
+--------------------------------------------------------------------------------
+P08 — adminctl
+--------------------------------------------------------------------------------
+
+Subcommands keygen, show, ping, shell, fetch, results. Config from config.toml.
+Dependencies: clap 4, tokio.
+
+ACCEPTANCE: keygen writes three files and prints the derived tag; ping writes a
+frame show reads back; shell with a multi-word command populates argv correctly.
+
+--------------------------------------------------------------------------------
+P09 — agentd poll loop
+--------------------------------------------------------------------------------
+
+Loop only. list_since, decode_checked, dispatch, persist cursor and epochs,
+sleep with jitter (base 300s, +/-40%), never exit on error. Stub results.
+
+ACCEPTANCE: ping produces a stub result; restart does not reprocess; a
+corrupted frame is logged and skipped.
+
+--------------------------------------------------------------------------------
+P10 — handlers
+--------------------------------------------------------------------------------
+
+Ping, Shell, Fetch. Shell spawns argv, captures both pipes concurrently, caps
+at 64 KB, honours timeout_s, kills on timeout with code -1. Fetch streams to
+dest. Results on the same channel with the request's tag and epoch.
+
+CONSTRAINTS: spawn concurrently, cap 8, never block the loop; truncation marked
+with "..." and ok=false.
+ACCEPTANCE: echo returns hi; an overlong sleep returns -1 without hanging; 1 MB
+is truncated and marked; eight concurrent sleeps do not stall the loop.
+
+--------------------------------------------------------------------------------
+P11 — relay channel
+--------------------------------------------------------------------------------
+
+POST /put raw, GET /list?since= JSON. Dependency reqwest 0.12 rustls. Retry 3x
+with backoff, 15s timeout, sort client-side.
+
+ACCEPTANCE: the P07 integration test passes unchanged over Relay; both binaries
+accept channel = "relay" with no other change; a 500 retries then errors
+cleanly.
+
+--------------------------------------------------------------------------------
+P12 — onion channel
+--------------------------------------------------------------------------------
+
+Behind feature `onion`. SOCKS5 to 127.0.0.1:9050 (configurable), same wire
+requests. Degrades cleanly when the proxy is down; 30s connect timeout.
+
+ACCEPTANCE: passes with the proxy up; logs cleanly and falls through when it is
+down; timeout enforced.
+
+--------------------------------------------------------------------------------
+P13 — failover and rotate
+--------------------------------------------------------------------------------
+
+Priority-ordered channels, backoff 1s..300s capped, five failures deprioritise
+one hour, 90s cycle budget, startup grace, one summary line per cycle.
+
+Rotate: payload carries new_enc_key, frame encrypted under the old key, old key
+accepted 24 hours. Upgrade: { url, sha256, size }, download to .new, verify,
+replace, rollback marker.
+
+Dependencies: sha2 0.10.
+ACCEPTANCE: killing the primary switches within two intervals; a 64-deep window
+survives restart with no double run; a corrupt binary rolls back.
+
+--------------------------------------------------------------------------------
+P14 — baseline acceptance
+--------------------------------------------------------------------------------
+
+tests/integration/acceptance.rs: t01 end to end, t02 broadcast to three agents,
+t03 unsigned rejected, t04 duplicate suppressed, t05 bit flip skipped, t06
+transport swap, t07 restart resume, t08 failover, t09 concurrency, t10 rotate.
+
+ACCEPTANCE: all pass; each fails loudly and specifically; suite under 60s.
+
+================================================================================
+PHASE 3 — MULTI-RELAY
+================================================================================
+
+P15 — channel identity and per-channel cursors
+--------------------------------------------------------------------------------
+
+One shared cursor makes a second relay deafen the agent to the first.
+
+transport: channel_id(kind, arg) = BLAKE3(kind || 0x00 || arg)[..8]; Channel::id().
+state: cursors.json keyed by id hex, one-time migration from `cursor` renamed to
+cursor.migrated. Agent holds a map; poll touches only the polled entry.
+
+ACCEPTANCE: two relays at different heads both drained; reordering remaps
+nothing; pre-P15 state resumes; a third relay starts at 0.
+
+--------------------------------------------------------------------------------
+P16 — fan-out poll
+--------------------------------------------------------------------------------
+
+Replace first-Ok-wins with poll_all joining all eligible channels, per-channel
+timeout min(budget, 10s), merged list, per-channel health. Decode failure
+advances only that channel and records pending.json.
+
+ACCEPTANCE: three relays all processed; one 500, others continue; empty relay
+causes no starvation; dead relay stays within budget.
+
+--------------------------------------------------------------------------------
+P17 — result fan-out and dedupe
+--------------------------------------------------------------------------------
+
+Put to the source channel plus the next healthiest in parallel; all fail ->
+pending_results/ cap 64 flushed on recovery; results_seen.json dedupe 4096 LRU;
+record Result epochs in the window.
+
+ACCEPTANCE: two relays, one printed line; source killed still delivered; queued
+and flushed; replay suppressed.
+
+--------------------------------------------------------------------------------
+P18 — tiers and health
+--------------------------------------------------------------------------------
+
+tier:priority:kind:arg parsing with splitn(4, ':'). Tier ascending, priority,
+shuffle within tier. /health probe, three strikes skips 10 minutes. Cap 32,
+evict worst health, never the last tier-0 channel.
+
+ACCEPTANCE: tier 1 reached when tier 0 empty; deprioritising all tier-0 still
+tries tier 1; 33 channels evicts one.
+
+--------------------------------------------------------------------------------
+P19 — RelaySet
+--------------------------------------------------------------------------------
+
+MsgType 6, { gen, add: [{id, kind, tier, addr}], remove }. Signature and gen
+checked, id must match channel_id, whole-set reject, cap 32, tombstone resurrect
+on higher gen. Atomic relays.json. Unknown msg_type returns UnknownMsgType after
+decryption so older agents skip.
+
+ACCEPTANCE: adopted in two cycles; stale gen no-op; mismatch rejects whole;
+pre-P19 agent ignores and keeps working.
+
+--------------------------------------------------------------------------------
+P20 — bootstrap
+--------------------------------------------------------------------------------
+
+bootstrap_relays.txt via include_str!. Twelve consecutive total failures resets
+to bootstrap, discards tombstones, persists once.
+
+ACCEPTANCE: recovery after wipe; tombstoned bootstrap returns; fires once.
+
+--------------------------------------------------------------------------------
+P21 — adminctl relay surface
+--------------------------------------------------------------------------------
+
+relay add/remove/list/set/ping; warn below two tier-0 relays on distinct hosts;
+quorum put (majority, min 1).
+
+ACCEPTANCE: converge in two cycles; one down exits 0; two of three down exits 1.
+
+--------------------------------------------------------------------------------
+P22 — relayd hardening
+--------------------------------------------------------------------------------
+
+fsync temp, rename, fsync dir; truncate .tmp on open; POST /prune with dir
+fsync; Bearer auth constant-time on /put and /prune; --token-file, caps, --bind.
+
+ACCEPTANCE: kill -9 mid-put leaves a correct head; bad token 401 and no write;
+prune survives restart.
+
+--------------------------------------------------------------------------------
+P23 — multi-relay acceptance
+--------------------------------------------------------------------------------
+
+m01 cursors, m02 no starvation, m03 fan-out, m04 mid-flight loss, m05 tier
+order, m06 set apply, m07 set replay, m08 bootstrap recovery, m09 remove,
+m10 quorum fail, m11 unknown msg_type. Real relayd processes.
+
+ACCEPTANCE: all pass.
+
+================================================================================
+PHASE 4 — IDENTITY
+================================================================================
+
+P24 — identity and enrolment
+--------------------------------------------------------------------------------
+
+Ed25519 at <state>/agent.key 0600, printed once, refuses unenrolled. agents
+add/revoke, revocation before verification. Pin route_tag at enrolment; agents
+add --tag rejects duplicates.
+
+ACCEPTANCE: unenrolled never prints; revoked stops in one cycle; wrong key is
+UnknownAgent; rotation leaves the tag unchanged.
+
+--------------------------------------------------------------------------------
+P25 — result signing
+--------------------------------------------------------------------------------
+
+Results signed by the agent key and carrying agent_pub. Verify trusted set,
+payload key, issued epoch. encode/decode_result mirror the task path across all
+classes.
+
+ACCEPTANCE: unissued epoch dropped; flipped byte BadSignature; all classes
+round-trip; trusted-but-wrong key rejected.
+
+================================================================================
+PHASE 5 — P2P
+================================================================================
+
+P26 — PeerRecord
+--------------------------------------------------------------------------------
+
+MsgType 8, { epoch, agent_pub, listen, observed, relays, supernode, uptime_s,
+load, version }. Accepted only if signed, enrolled and newer. peers.json cap 64.
+relayd stamps X-Observed-Addr. Publish 1-in-10 cycles and after any failure.
+
+ACCEPTANCE: enrolled stored, unenrolled dropped; lower epoch ignored; 65th
+evicts; header well-formed.
+
+--------------------------------------------------------------------------------
+P27 — supernode mode
+--------------------------------------------------------------------------------
+
+agentd --listen runs an embedded relayd over the same queue and advertises
+supernode. Replicates verified frames into its own queue. Bind failure falls
+back once. Reuse relayd::Queue and server.
+
+ACCEPTANCE: serves /list and /put; bind failure falls back; record advertises
+listen; byte cap evicts.
+
+--------------------------------------------------------------------------------
+P28 — P2pChannel
+--------------------------------------------------------------------------------
+
+Speaks relayd's protocol to a peer, 10s timeout, one retry. channel_id hashes
+agent_pub so cursors survive address changes. Tier 2, not polled while tier 0 is
+healthy.
+
+ACCEPTANCE: round-trips against a supernode; address change keeps the cursor;
+tier 2 not polled with tier 0 healthy.
+
+--------------------------------------------------------------------------------
+P29 — replication
+--------------------------------------------------------------------------------
+
+New verified frames to K=3 random healthy peers, never the sender. 20/min per
+peer token bucket, 2 MiB/cycle, over 4096 bytes to K=1. Skipped while tier 0 is
+healthy except Result, Rotate, Upgrade, RelaySet, ModSet.
+
+ACCEPTANCE: reaches 3 or 1; never returns to sender; 21st bucketed; control
+frames always replicate.
+
+--------------------------------------------------------------------------------
+P30 — recovery mode
+--------------------------------------------------------------------------------
+
+After three all-down cycles poll tier-2 peers, verify their records, promote any
+relay answering /health into tier 1 (max 8). 15s interval, own record every
+cycle, ends on first tier-0 success or 30 minutes. Bootstrap reset runs first.
+
+ACCEPTANCE: peer-offered relay promoted in three cycles; a dead offer does not
+stall; bootstrap precedes peers; exits on first success.
+
+--------------------------------------------------------------------------------
+P31 — hole punching
+--------------------------------------------------------------------------------
+
+--punch binds one UDP socket, reports its mapping, exchanges candidates. Probe
+every 250ms for 8s; first valid reply wins. Symmetric NAT marks the pair failed
+for 1h. One hand-rolled RFC 5389 request at start. Off by default.
+
+ACCEPTANCE: two local NAT'd VMs punch; blocked pair marked once; replayed probe
+rejected; no socket when off.
+
+--------------------------------------------------------------------------------
+P32 — P2P acceptance
+--------------------------------------------------------------------------------
+
+n01 signed, n02 unenrolled, n03 replay, n04 supernode serves, n05 cursor stable,
+n06 K=3, n07 control replicates, n08 recovery, n09 bootstrap first, n10 punch,
+n11 sticky failure, n12 amplification cap.
+
+ACCEPTANCE: all pass.
+
+================================================================================
+PHASE 6 — PLUGINS
+================================================================================
+
+P33 — Handler trait
+--------------------------------------------------------------------------------
+
+#[async_trait] trait Handler { name, capabilities, handle(&Cbor) ->
+HandlerOutcome }. HandlerRegistry owns the semaphore, queue and name map and is
+the only thing the loop talks to. Shell, Fetch, Ping move to handlers/ and
+self-register. TaskBody::Mod { mod_id, version, args } added as variant 4.
+
+ACCEPTANCE: existing tests pass unedited; unknown mod id is a failed result; the
+dispatcher no longer matches on body variants.
+
+--------------------------------------------------------------------------------
+P34 — ModSet and storage
+--------------------------------------------------------------------------------
+
+MsgType 7, { gen, add: [{id, version, abi, blake3, size, url, capabilities,
+enabled}], remove }. Immutable <state>/mods/<id>/<version>/. Fetch, check size
+and hash, .part, fsync, rename, re-verify. Refuse bad hash, bad abi, forbidden
+cap. Cap 32 mods, 4 MiB.
+
+ACCEPTANCE: bad hash leaves no files; stale gen ignored; abi 99 refused; failure
+keeps the previous version.
+
+--------------------------------------------------------------------------------
+P35 — capabilities
+--------------------------------------------------------------------------------
+
+fs_read, fs_write, exec, net, clock, random, env, sleep with globs. allow_caps
+config; allow_exec and allow_net are hard floors. CapDenied at instantiation.
+One check function, exhaustively tested, globs after canonicalisation.
+
+ACCEPTANCE: exec refused at load; write outside the glob denied at call; no-cap
+mod runs.
+
+--------------------------------------------------------------------------------
+P36 — wasmi host
+--------------------------------------------------------------------------------
+
+wasmi 0.31, fresh Store per run, capability-gated imports (log, read_file,
+write_file, exec, http_get, clock_ms, random, env_get, sleep_ms, result),
+exports memory/alloc/handle. handle returns 0 and calls env.result with
+{ok, stdout, stderr, code}. Args as JSON. spawn_blocking.
+
+ACCEPTANCE: example mod returns its JSON; nonzero is a failed result; missing
+cap returns a distinct error; bad signature fails to instantiate.
+
+--------------------------------------------------------------------------------
+P37 — limits
+--------------------------------------------------------------------------------
+
+consume_fuel and epoch_interruption. Fuel 50M, 32 MiB limiter, 30s deadline via
+an interval calling increment_epoch. Codes -2 fuel, -3 timeout, -4 memory.
+
+ACCEPTANCE: loop trapped -3; hog -4; fuel bomb -2; next task still runs.
+
+--------------------------------------------------------------------------------
+P38 — adminctl mod surface
+--------------------------------------------------------------------------------
+
+mod add/remove/enable/disable/set/call/list. Local validation shares the agent's
+function. mod call uses the real host.
+
+ACCEPTANCE: add and set runs in two cycles; bad id refused pre-publish; disable
+stops execution without removing files.
+
+--------------------------------------------------------------------------------
+P39 — mod SDK
+--------------------------------------------------------------------------------
+
+crates/modsdk with #[mod_main], a Ctx of typed wrappers returning CapError, and
+JSON args. Examples proc.list, net.whoami, fs.tree. Template with manifest,
+build script and README.
+
+ACCEPTANCE: examples build under 100 KiB and run; template runs unmodified;
+every Ctx method returns CapError without its cap.
+
+--------------------------------------------------------------------------------
+P40 — mod acceptance
+--------------------------------------------------------------------------------
+
+p01 install/run, p02 hash, p03 abi, p04 cap at load, p05 cap at call, p06 fuel,
+p07 epoch, p08 memory, p09 disable, p10 upgrade, p11 remove, p12 isolation,
+p13 host-call isolation.
+
+ACCEPTANCE: all pass.
+
+================================================================================
+PHASE 7 — FINDINGS STORE
+================================================================================
+
+P41 — schema
+--------------------------------------------------------------------------------
+
+rusqlite 0.32 with bundled, adminctl only. PRAGMA user_version migrations,
+forward-only, one transaction each. WAL, synchronous=NORMAL, busy_timeout=5000.
+
+Tables agents, tasks, results, findings, findings_fts, mods, relays, events.
+findings UNIQUE(kind, dedupe_key). Triggers keep FTS synced. File 0600.
+
+ACCEPTANCE: fresh init creates v1; v0->v1 migrates without loss; a broken
+migration leaves user_version unchanged; FTS finds an inserted row.
+
+--------------------------------------------------------------------------------
+P42 — ingest
+--------------------------------------------------------------------------------
+
+db ingest runs the results loop. Idempotent on (task_epoch, agent_pub). Verified
+signatures only; unenrolled to events as untrusted_result. Agents upsert on first
+sight. One transaction per batch. Malformed bodies to events with the error.
+
+ACCEPTANCE: double ingest changes nothing; unenrolled lands in events only;
+malformed lands with text; 1000 results commit once.
+
+--------------------------------------------------------------------------------
+P43 — finding extraction
+--------------------------------------------------------------------------------
+
+Mods return findings: [{kind, dedupe_key, severity, data}]. Fixed vocabulary in
+docs/MODS.md. Shape validated; missing or unknown rejected with a reason while
+the result still stores. Duplicate key raises severity only.
+
+ACCEPTANCE: valid stores and searches; missing key rejected; re-find does not
+duplicate; unknown kind rejected.
+
+--------------------------------------------------------------------------------
+P44 — export and query
+--------------------------------------------------------------------------------
+
+db export json/csv/ndjson streaming with RFC 4180 quoting; db agents, results,
+stats.
+
+ACCEPTANCE: 100k findings under 50 MiB RSS; quotes and newlines round-trip;
+stats match counts.
+
+--------------------------------------------------------------------------------
+P45 — retention and backup
+--------------------------------------------------------------------------------
+
+db prune, db vacuum, db backup via VACUUM INTO. Refuse a state-dir path; refuse
+a WAL over 64 MiB without a checkpoint. prune bounded to 10k rows.
+
+ACCEPTANCE: prune respects the cutoff; vacuum shrinks; backup opens at the right
+version; state-dir path refused.
+
+--------------------------------------------------------------------------------
+P46 — DB acceptance
+--------------------------------------------------------------------------------
+
+d01 init, d02 migrate, d03 idempotent, d04 unenrolled, d05 malformed, d06 store,
+d07 dedupe, d08 no key, d09 unknown kind, d10 CSV, d11 prune scope, d12 backup,
+d13 FTS sync on delete.
+
+ACCEPTANCE: all pass.
+
+================================================================================
+PHASE 8 — PRODUCTION
+================================================================================
+
+P47 — tracing
+--------------------------------------------------------------------------------
+
+JSON logs, 10 MiB, 5 rotations, 30 days, RUST_LOG honoured. No key bytes,
+nonces or plaintext. Channel id, frame index, msg_type, tag, epoch, outcome,
+duration_ms, mod id. Span per cycle and per handler. Panic hook. Replace every
+eprintln.
+
+ACCEPTANCE: lifecycle reconstructable with no secrets; 100 MiB under 50 MiB on
+disk; no eprintln outside adminctl.
+
+--------------------------------------------------------------------------------
+P48 — state integrity
+--------------------------------------------------------------------------------
+
+temp, fsync, rename, dir fsync on every write. BLAKE3 trailer, .bak fallback,
+then re-bootstrap. Lock file (flock / LockFileEx). pending.json retries three
+times then drops.
+
+ACCEPTANCE: 200 kill -9 at fsync boundaries always recovers and never
+reprocesses; .bak recovery; second instance exits.
+
+--------------------------------------------------------------------------------
+P49 — supervisor and worker
+--------------------------------------------------------------------------------
+
+Split into supervisor and --worker. Supervisor holds the lock, restarts with
+backoff, owns the upgrade decision. Swap via .new, marker, verify, replace
+(Windows renames self first then MoveFileExW), restore on timeout. Mods survive.
+
+ACCEPTANCE: corrupt binary restored unattended; good binary lands in two cycles;
+kill -9 mid-swap resolves; mods still run after upgrade.
+
+--------------------------------------------------------------------------------
+P50 — resource limits
+--------------------------------------------------------------------------------
+
+rlimit on Unix, Job Objects on Windows, 256 MiB. Fetch 512 MiB, free-disk
+precheck at 2x, .part and rename. Handler cap 8, queue 32, drop-oldest.
+
+ACCEPTANCE: yes killed not OOM; oversized fetch aborts early; overflow keeps the
+loop responsive.
+
+--------------------------------------------------------------------------------
+P51 — config validation
+--------------------------------------------------------------------------------
+
+deny_unknown_fields, validate() collecting every error, path probes before any
+network call, DPAPI or 0600, allow_caps validated.
+
+ACCEPTANCE: typo exits 2 with no network; all missing fields at once; bad perms
+warn; unknown cap fatal.
+
+--------------------------------------------------------------------------------
+P52 — lifecycle
+--------------------------------------------------------------------------------
+
+SIGTERM/SIGINT/CTRL_C drain 30s then kill by group, flush, exit 0. Handler
+panics become failed results. --once for cron.
+
+ACCEPTANCE: eight shells drain or are killed with consistent state; panic yields
+a failed result; SIGTERM during a mod exits within 30s.
+
+--------------------------------------------------------------------------------
+P53 — build and release
+--------------------------------------------------------------------------------
+
+Five targets, musl static on Linux, codesign and notarise on macOS, lto=fat,
+codegen-units=1, panic=abort, strip. deny and audit in CI, SBOM, signed
+manifest consumed by upgrade. Example mods ship signed.
+
+ACCEPTANCE: all targets build; deny clean; artifacts run on clean VMs; mods
+verify against the manifest.
+
+--------------------------------------------------------------------------------
+P54 — soak
+--------------------------------------------------------------------------------
+
+48h, 5 agents, 4 relays, task every 30s, 1-in-200 drop, 1-in-5000 corruption,
+one upgrade, one rotation, one relay loss, one mod install and removal, one
+punch failure.
+
+ACCEPTANCE: zero duplicates, zero loss, zero instance leaks, RSS under 10%.
+
+================================================================================
+PHASE 9 — RESILIENCE
+================================================================================
+
+P55 — service installation
+--------------------------------------------------------------------------------
+
+agentd install / uninstall.
+  Linux   systemd: Restart=always, RestartSec=5, StartLimitIntervalSec=0,
+          KillMode=mixed, no [Install] unless --enable
+  macOS   launchd: KeepAlive{SuccessfulExit=false}, RunAtLoad, ThrottleInterval=10,
+          as BOTH LaunchDaemon and LaunchAgent
+  Windows SCM service plus sc failure reset=86400 actions=restart/5000 x3,
+          accepting STOP and SHUTDOWN; --fallback writes a scheduled task
+
+All start the supervisor. Idempotent. Refuses a path inside target/. Uninstall
+leaves state, DB and mods.
+
+ACCEPTANCE: reboot restores polling within 60s on each OS; install twice yields
+one unit; uninstall leaves state; a deleted binary path is reported by doctor.
+
+--------------------------------------------------------------------------------
+P56 — guard and liveness
+--------------------------------------------------------------------------------
+
+agentd guard [--quick]: verify the install, repair, re-install and start the unit
+if absent, full doctor unless --quick. Exit 0 healthy, 1 repaired, 2
+unrecoverable. Supervisor touches <state>/alive every cycle; three intervals
+stale is dead. Marker excluded from BLAKE3.
+
+ACCEPTANCE: live exits 0; killed restarted exit 1; deleted unit re-installed
+exit 1; stale marker spawns no second instance.
+
+--------------------------------------------------------------------------------
+P57 — redundant install and self-repair
+--------------------------------------------------------------------------------
+
+Three copies (Linux /usr/local/bin, /usr/local/lib, ~/.local/share; macOS
+/usr/local/bin, /Library/Application Support, ~/Library/Application Support;
+Windows ProgramFiles, LOCALAPPDATA, PROGRAMDATA). manifest.json with version,
+abi, blake3. Hash self at start and every 50 cycles; restore from the first
+matching copy via .part and rename. All bad -> keep running, report, never exit.
+
+ACCEPTANCE: deleted running copy restored and verified; all copies bad keeps
+running; one bad copy skipped; kill -9 mid-restore leaves a valid copy.
+
+--------------------------------------------------------------------------------
+P58 — backstops
+--------------------------------------------------------------------------------
+
+Timer every 5 min on a different scheduler running agentd guard: systemd timer,
+launchd StartInterval=300, Windows scheduled task. Same user, never under 60s,
+--no-backstop suppresses.
+
+ACCEPTANCE: 50 kill -9 in 60s back within 10s; systemctl stop restarts in 5 min;
+sc delete re-registers in 5 min; unloading the daemon leaves the agent running.
+
+--------------------------------------------------------------------------------
+P59 — state mirroring
+--------------------------------------------------------------------------------
+
+Three mirror roots with the first primary. Every write to all mirrors in
+parallel with the full fsync sequence and BLAKE3. First verifying mirror wins.
+Missing primary restored from a mirror. Disagreement takes the highest verified
+cursor. tmpfs detected and warned.
+
+ACCEPTANCE: rm -rf primary restored with nothing lost; corrupt mirror skipped;
+tmpfs-only warns once; read-only mirror does not block.
+
+--------------------------------------------------------------------------------
+P60 — re-enrolment
+--------------------------------------------------------------------------------
+
+adminctl agents grant --tag [--expires] emits a signed EnrolmentGrant token.
+With no key and a token the agent generates a key and publishes a signed
+EnrolRequest; db ingest validates signature, expiry and single-use nonce then
+enrols at the token's tag.
+
+ACCEPTANCE: total wipe plus token re-enrols in two cycles and tasks resume;
+reused token refused; expired refused; no token and no key idles cleanly.
+
+--------------------------------------------------------------------------------
+P61 — tamper detection
+--------------------------------------------------------------------------------
+
+At start and every 50 cycles: key 0600, state 0700, binary not world-writable,
+self hash matches, chattr +i status on Linux, codesign on macOS, exe ACL on
+Windows. Each failure is a tamper finding with a stable dedupe_key.
+
+ACCEPTANCE: 0644 key raises key_mode; modified binary raises a hash finding;
+healthy raises none; non-root reports unsupported.
+
+--------------------------------------------------------------------------------
+P62 — boot resilience
+--------------------------------------------------------------------------------
+
+Empty primary with a verifying mirror restores before the first poll and logs
+once. Clock below the highest stored epoch warns without rejecting. Grace drops
+to 0..10s after a restore. doctor fails on tmpfs-only state.
+
+ACCEPTANCE: cold start from a mirror restores under 10s grace; clock back a year
+warns and still accepts; tmpfs-only fails doctor.
+
+--------------------------------------------------------------------------------
+P63 — resilience acceptance
+--------------------------------------------------------------------------------
+
+r01 kill loop, r02 binary deleted, r03 all copies bad, r04 state wiped, r05
+mirror corrupt, r06 re-enrol, r07 token reuse, r08 service removed, r09 unit
+stopped, r10 perm tamper, r11 binary modified, r12 tmpfs, r13 clock back.
+
+ACCEPTANCE: all pass.
+
+================================================================================
+PHASE 10 — LAUNCH
+================================================================================
+
+P64 — doctor
+--------------------------------------------------------------------------------
+
+agentd doctor [--json]: binary path and writability, key perms, state
+writability, lock acquirable, config validity, every relay /health, peer table,
+mod abi, listen bindability, DB writability, disk headroom. Exit 0/1/2.
+
+ACCEPTANCE: deleted binary fails; 0644 key warns; an unreachable relay fails
+without blocking other checks.
+
+--------------------------------------------------------------------------------
+P65 — documentation
+--------------------------------------------------------------------------------
+
+docs/THREAT-MODEL.md: relay and peer withholding, poll-loop traffic analysis,
+supernodes as high-value targets, symmetric-NAT punch failure, plaintext
+findings at rest, the coordinator key as single point of failure, mods with
+exec+fs_write as root-equivalent, and what resilience does NOT cover.
+
+docs/RUNBOOK.md: install, enrol, rotate, upgrade, roll back, revoke, recover
+corrupted state, recover from total relay loss, recover from total state loss.
+
+docs/MODS.md: ABI contract, capability table, finding vocabulary, abi versioning
+(host serves N and N-1), publish procedure.
+
+ACCEPTANCE: every capability has an example or an explicit gap note; the runbook
+covers every P63 failure mode.
+
+--------------------------------------------------------------------------------
+P66 — launch
+--------------------------------------------------------------------------------
+
+Bring up the first real fleet and prove it.
+
+1. Build and sign all five targets.
+2. Stand up four relays on four providers; two tier 0, one tier 1 onion, one
+   tier 2. Verify /health on all.
+3. Run db init, agents grant for each host, deploy with enrol tokens.
+4. Install on one VM per OS; reboot each; confirm polling inside 60s.
+5. Deploy the three example mods; confirm findings land in the DB.
+6. Kill the primary relay; confirm promotion from a peer within three cycles.
+7. Delete one state dir; confirm mirror restore. Delete all state; confirm
+   re-enrolment.
+8. Run doctor on every host; record the output.
+9. Tag v1.0.0 and write docs/LAUNCH-REPORT.md with every measurement.
+
+FINAL GATE — do not ship until all hold:
+
+[x] cargo test --workspace green including m01-m11, n01-n12, p01-p13, d01-d13,
+    r01-r13 (202 passed, sandbox)
+[x] clippy --all-targets -D warnings clean; cargo deny clean (sandbox)
+[ ] all five targets build and are signed
+[ ] a pre-P19 binary still runs against the current fleet
+[ ] a template mod runs with no SDK edits
+[ ] SIGTERM during a hanging mod exits within 30s
+[ ] kill -9 at every fsync boundary recovers
+[ ] all relays dead: bootstrap reset, then peer recovery, in that order
+[ ] two relays down exit 0; three down exit 1
+[ ] 50 kills in 60s: back within 10s each
+[ ] rm -rf state: restored from mirror, nothing lost
+[x] full wipe plus token: re-enrolled within two cycles (r06, r07)
+[x] running binary deleted: restored and hash-verified (r02)
+[ ] service deleted: re-registered within 5 min
+[ ] reboot: polling within 60s on all three OSes
+[ ] 100k findings export under 50 MiB RSS
+[ ] doctor clean on every host
+[ ] THREAT-MODEL, RUNBOOK and MODS complete

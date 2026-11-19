@@ -1,0 +1,40 @@
+[package]
+name = "agentd"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "agentd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agentd"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+libc.workspace = true
+msgfmt = { path = "../msgfmt" }
+reqwest.workspace = true
+rand.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_cbor.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+transport = { path = "../transport" }
+wasmi.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+sha2.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "mod-net-whoami"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent-Fleet example module: report the observed public address"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+modsdk = { path = "../..", features = ["net"] }
+serde_json.workspace = true

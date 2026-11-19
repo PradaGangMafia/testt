@@ -1,0 +1,15 @@
+[package]
+name = "mod-proc-list"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent-Fleet example module: inventory from /proc"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+modsdk = { path = "../..", features = ["fs-read"] }
+serde_json.workspace = true

@@ -1,0 +1,2 @@
+# tier:priority:kind:arg
+0:0:relay:http://127.0.0.1:8787

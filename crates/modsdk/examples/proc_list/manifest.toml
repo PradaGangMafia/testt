@@ -1,0 +1,4 @@
+id = "proc.list"
+version = "1.0.0"
+abi = 1
+capabilities = ["fs_read:/proc/**"]
